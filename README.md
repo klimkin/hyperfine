@@ -129,6 +129,32 @@ Interleaved mode runs: A₁, B₁, A₂, B₂, A₃, B₃, ...
 This creates naturally paired samples that help cancel out time-varying effects, making measurements
 more comparable.
 
+### Statistical analysis
+
+When using interleaved mode, hyperfine automatically performs statistical analysis to determine
+if performance differences are practically significant. The analysis uses:
+
+- **Bootstrap confidence intervals**: Non-parametric method that works well with small samples
+- **Log-ratio speedup**: Geometric mean comparison that handles multiplicative effects properly
+- **Practical significance threshold**: Distinguishes real differences from measurement noise
+
+The verdict indicates whether a command is definitively "faster", "slower", or shows
+"no clear difference" compared to the reference command.
+
+You can customize the analysis with these flags:
+```sh
+hyperfine --interleave --confidence 0.99 --practical-delta 0.05 'command1' 'command2'
+```
+
+Available options:
+- `--confidence <LEVEL>`: Confidence level for CI (default: 0.95, range: 0.5-0.99)
+- `--practical-delta <DELTA>`: Threshold for practical significance (default: 0.01 = 1%)
+- `--resamples <NUM>`: Number of bootstrap resamples (default: 10000)
+- `--seed <NUM>`: Random seed for reproducible results
+
+The JSON export includes analysis results when available, containing speedup, confidence intervals,
+and the verdict for each comparison.
+
 ### Intermediate shell
 
 By default, commands are executed using a predefined shell (`/bin/sh` on Unix, `cmd.exe` on Windows).

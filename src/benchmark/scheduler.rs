@@ -6,6 +6,7 @@ use colored::*;
 use std::cmp;
 use std::cmp::Ordering;
 
+use crate::analysis::{compute_speedup_with_ci, determine_verdict, AnalysisResult, Verdict};
 use crate::command::{Command, Commands};
 use crate::export::ExportManager;
 use crate::options::{
@@ -20,6 +21,8 @@ use crate::util::min_max::{max, min};
 use crate::util::units::Second;
 
 use anyhow::{anyhow, Result};
+use rand::SeedableRng;
+use rand_chacha::ChaCha8Rng;
 use statistical::{mean, median, standard_deviation};
 
 /// Accumulator for collecting benchmark timing data during interleaved execution
@@ -50,6 +53,7 @@ pub struct Scheduler<'a> {
     options: &'a Options,
     export_manager: &'a ExportManager,
     results: Vec<BenchmarkResult>,
+    analysis_results: Option<Vec<AnalysisResult>>,
 }
 
 impl<'a> Scheduler<'a> {
@@ -63,6 +67,7 @@ impl<'a> Scheduler<'a> {
             options,
             export_manager,
             results: vec![],
+            analysis_results: None,
         }
     }
 
@@ -757,6 +762,144 @@ impl<'a> Scheduler<'a> {
     pub fn final_export(&self) -> Result<()> {
         self.export_manager.write_results(&self.results, false)
     }
+
+    /// Check if statistical analysis flags are being used
+    fn has_analysis_flags(&self) -> bool {
+        self.options.seed.is_some()
+            || self.options.confidence != 0.95
+            || self.options.practical_delta != 0.01
+            || self.options.resamples != 10000
+    }
+
+    /// Run statistical analysis on benchmark results (requires interleaved mode)
+    pub fn run_analysis(&mut self) {
+        // Check if we have enough results and if they have timing data
+        if self.results.len() < 2 {
+            return;
+        }
+
+        // Warn if analysis flags used without interleave
+        if self.has_analysis_flags()
+            && !self.options.interleave
+            && self.options.output_style != OutputStyleOption::Disabled
+        {
+            eprintln!(
+                "{}: Statistical analysis flags (--confidence, --practical-delta, --resamples, --seed) \
+                 are most effective with --interleave mode for paired sample analysis.",
+                "Warning".yellow()
+            );
+        }
+
+        // Only run analysis if we have paired data (interleaved mode)
+        if !self.options.interleave {
+            return;
+        }
+
+        // Check that all results have timing data
+        if !self.results.iter().all(|r| r.times.is_some()) {
+            return;
+        }
+
+        // Create RNG (seeded or random)
+        let mut rng: ChaCha8Rng = match self.options.seed {
+            Some(seed) => ChaCha8Rng::seed_from_u64(seed),
+            None => ChaCha8Rng::from_entropy(),
+        };
+
+        // Use first command as reference (or the explicit reference if set)
+        let ref_times = self.results[0].times.as_ref().unwrap();
+
+        let mut analysis_results = Vec::new();
+
+        for (i, result) in self.results.iter().enumerate() {
+            if i == 0 {
+                // Skip reference command itself
+                continue;
+            }
+
+            let cmd_times = result.times.as_ref().unwrap();
+
+            // Compute speedup with confidence interval
+            let (speedup, ci_lower, ci_upper) = compute_speedup_with_ci(
+                cmd_times,
+                ref_times,
+                self.options.confidence,
+                self.options.resamples,
+                &mut rng,
+            );
+
+            // Skip if no valid data (speedup is NaN)
+            if speedup.is_nan() {
+                continue;
+            }
+
+            // Determine verdict
+            let verdict = determine_verdict(ci_lower, ci_upper, self.options.practical_delta);
+
+            analysis_results.push(AnalysisResult {
+                command: result.command.clone(),
+                speedup,
+                ci_lower,
+                ci_upper,
+                confidence: self.options.confidence,
+                verdict,
+            });
+        }
+
+        self.analysis_results = Some(analysis_results);
+    }
+
+    /// Print statistical analysis results to console
+    pub fn print_analysis_results(&self) {
+        if self.options.output_style == OutputStyleOption::Disabled {
+            return;
+        }
+
+        let analysis_results = match &self.analysis_results {
+            Some(results) if !results.is_empty() => results,
+            _ => return,
+        };
+
+        let reference_name = &self.results[0].command_with_unused_parameters;
+
+        println!();
+        println!("{}", "Statistical Analysis".bold());
+        println!(
+            "  Reference: {}",
+            reference_name.cyan()
+        );
+        println!(
+            "  Confidence: {:.0}%, Practical delta: {:.1}%",
+            self.options.confidence * 100.0,
+            self.options.practical_delta * 100.0
+        );
+        println!();
+
+        for result in analysis_results {
+            let verdict_colored = match result.verdict {
+                Verdict::Faster => result.verdict.description().green(),
+                Verdict::Slower => result.verdict.description().red(),
+                Verdict::NoClearDifference => result.verdict.description().yellow(),
+            };
+
+            println!(
+                "  {} vs reference:",
+                result.command.cyan()
+            );
+            println!(
+                "    Speedup: {:.2}x ({:.0}% CI: {:.2}-{:.2})",
+                result.speedup,
+                result.confidence * 100.0,
+                result.ci_lower,
+                result.ci_upper
+            );
+            println!(
+                "    Verdict: {}",
+                verdict_colored.bold()
+            );
+            println!();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -796,6 +939,37 @@ fn generate_results_with_options(
 
     scheduler.run_benchmarks()?;
     Ok(scheduler.results)
+}
+
+#[cfg(test)]
+fn generate_results_with_analysis(
+    args: &[&'static str],
+) -> Result<(Vec<BenchmarkResult>, Option<Vec<AnalysisResult>>)> {
+    use crate::cli::get_cli_arguments;
+
+    let args = ["hyperfine", "--debug-mode", "--style=none"]
+        .iter()
+        .chain(args);
+    let cli_arguments = get_cli_arguments(args);
+    let mut options = Options::from_cli_arguments(&cli_arguments)?;
+
+    assert_eq!(options.executor_kind, ExecutorKind::Mock(None));
+
+    let commands = Commands::from_cli_arguments(&cli_arguments)?;
+    let export_manager = ExportManager::from_cli_arguments(
+        &cli_arguments,
+        options.time_unit,
+        options.sort_order_exports,
+    )?;
+
+    options.validate_against_command_list(&commands)?;
+
+    let mut scheduler = Scheduler::new(&commands, &options, &export_manager);
+
+    scheduler.run_benchmarks()?;
+    scheduler.run_analysis();
+
+    Ok((scheduler.results, scheduler.analysis_results))
 }
 
 #[test]
@@ -1041,6 +1215,102 @@ fn scheduler_interleaved_with_per_command_prepare() -> Result<()> {
     ])?;
 
     assert_eq!(results.len(), 2);
+
+    Ok(())
+}
+
+#[test]
+fn scheduler_analysis_with_interleaved() -> Result<()> {
+    // Analysis should run with interleaved mode
+    let (results, analysis) = generate_results_with_analysis(&[
+        "--runs=10",
+        "--interleave",
+        "--seed=42",
+        "sleep 0.1",
+        "sleep 0.2",
+    ])?;
+
+    assert_eq!(results.len(), 2);
+    assert!(analysis.is_some());
+
+    let analysis = analysis.unwrap();
+    // Should have one analysis result (comparing second command to first)
+    assert_eq!(analysis.len(), 1);
+
+    // Second command is 2x slower, so speedup should be around 0.5
+    assert!(
+        analysis[0].speedup > 0.4 && analysis[0].speedup < 0.6,
+        "Speedup should be ~0.5, got {}",
+        analysis[0].speedup
+    );
+
+    // CI should contain the speedup
+    assert!(analysis[0].ci_lower <= analysis[0].speedup);
+    assert!(analysis[0].ci_upper >= analysis[0].speedup);
+
+    // With such a clear difference, verdict should be "slower"
+    assert_eq!(analysis[0].verdict, Verdict::Slower);
+
+    Ok(())
+}
+
+#[test]
+fn scheduler_analysis_without_interleaved() -> Result<()> {
+    // Analysis should NOT run without interleaved mode
+    let (results, analysis) = generate_results_with_analysis(&[
+        "--runs=10",
+        "sleep 0.1",
+        "sleep 0.2",
+    ])?;
+
+    assert_eq!(results.len(), 2);
+    // Analysis should be None when not using interleaved mode
+    assert!(analysis.is_none());
+
+    Ok(())
+}
+
+#[test]
+fn scheduler_analysis_reproducible_with_seed() -> Result<()> {
+    // Same seed should produce same results
+    let (_, analysis1) = generate_results_with_analysis(&[
+        "--runs=10",
+        "--interleave",
+        "--seed=12345",
+        "sleep 0.1",
+        "sleep 0.2",
+    ])?;
+
+    let (_, analysis2) = generate_results_with_analysis(&[
+        "--runs=10",
+        "--interleave",
+        "--seed=12345",
+        "sleep 0.1",
+        "sleep 0.2",
+    ])?;
+
+    let a1 = analysis1.unwrap();
+    let a2 = analysis2.unwrap();
+
+    assert_eq!(a1[0].speedup, a2[0].speedup);
+    assert_eq!(a1[0].ci_lower, a2[0].ci_lower);
+    assert_eq!(a1[0].ci_upper, a2[0].ci_upper);
+
+    Ok(())
+}
+
+#[test]
+fn scheduler_analysis_single_command_no_analysis() -> Result<()> {
+    // Single command should not produce analysis
+    let (results, analysis) = generate_results_with_analysis(&[
+        "--runs=10",
+        "--interleave",
+        "sleep 0.1",
+    ])?;
+
+    assert_eq!(results.len(), 1);
+    // With only one command, no analysis possible
+    assert!(analysis.is_none());
 
     Ok(())
 }

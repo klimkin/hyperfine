@@ -249,6 +249,18 @@ pub struct Options {
 
     /// Whether to interleave benchmark runs across commands
     pub interleave: bool,
+
+    /// Confidence level for bootstrap confidence intervals (0.5 to 0.99)
+    pub confidence: f64,
+
+    /// Practical significance threshold for speedup verdicts
+    pub practical_delta: f64,
+
+    /// Number of bootstrap resamples for CI estimation
+    pub resamples: usize,
+
+    /// Optional random seed for reproducible bootstrap analysis
+    pub seed: Option<u64>,
 }
 
 impl Default for Options {
@@ -272,6 +284,10 @@ impl Default for Options {
             time_unit: None,
             command_input_policy: CommandInputPolicy::Null,
             interleave: false,
+            confidence: 0.95,
+            practical_delta: 0.01,
+            resamples: 10000,
+            seed: None,
         }
     }
 }
@@ -469,6 +485,45 @@ impl Options {
         };
 
         options.interleave = matches.get_flag("interleave");
+
+        // Parse statistical analysis options
+        if let Some(confidence_str) = matches.get_one::<String>("confidence") {
+            let confidence = confidence_str
+                .parse::<f64>()
+                .map_err(|e| OptionsError::FloatParsingError("confidence", e))?;
+            if !(0.5..=0.99).contains(&confidence) {
+                return Err(OptionsError::InvalidConfidenceLevel(confidence));
+            }
+            options.confidence = confidence;
+        }
+
+        if let Some(delta_str) = matches.get_one::<String>("practical-delta") {
+            let delta = delta_str
+                .parse::<f64>()
+                .map_err(|e| OptionsError::FloatParsingError("practical-delta", e))?;
+            if !(0.0..=1.0).contains(&delta) {
+                return Err(OptionsError::InvalidPracticalDelta(delta));
+            }
+            options.practical_delta = delta;
+        }
+
+        if let Some(resamples_str) = matches.get_one::<String>("resamples") {
+            let resamples = resamples_str
+                .parse::<usize>()
+                .map_err(|e| OptionsError::IntParsingError("resamples", e))?;
+            if resamples < 100 {
+                return Err(OptionsError::InvalidResamples(resamples));
+            }
+            options.resamples = resamples;
+        }
+
+        if let Some(seed_str) = matches.get_one::<String>("seed") {
+            options.seed = Some(
+                seed_str
+                    .parse::<u64>()
+                    .map_err(|e| OptionsError::IntParsingError("seed", e))?,
+            );
+        }
 
         Ok(options)
     }

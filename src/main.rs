@@ -14,6 +14,7 @@ use options::Options;
 use anyhow::Result;
 use colored::*;
 
+pub mod analysis;
 pub mod benchmark;
 pub mod cli;
 pub mod command;
@@ -44,7 +45,9 @@ fn run() -> Result<()> {
 
     let mut scheduler = Scheduler::new(&commands, &options, &export_manager);
     scheduler.run_benchmarks()?;
+    scheduler.run_analysis();
     scheduler.print_relative_speed_comparison();
+    scheduler.print_analysis_results();
     scheduler.final_export()?;
 
     Ok(())
