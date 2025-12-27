@@ -62,8 +62,8 @@ pub fn bootstrap_percentile_ci<R: Rng>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand_chacha::ChaCha8Rng;
     use rand::SeedableRng;
+    use rand_chacha::ChaCha8Rng;
 
     #[test]
     fn test_bootstrap_ci_basic() {
@@ -127,6 +127,11 @@ mod tests {
         // 99% CI should be wider than 90% CI
         let width_99 = upper_99 - lower_99;
         let width_90 = upper_90 - lower_90;
-        assert!(width_99 > width_90, "99% CI ({}) should be wider than 90% CI ({})", width_99, width_90);
+        assert!(
+            width_99 > width_90,
+            "99% CI ({}) should be wider than 90% CI ({})",
+            width_99,
+            width_90
+        );
     }
 }

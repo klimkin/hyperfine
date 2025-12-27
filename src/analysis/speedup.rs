@@ -108,8 +108,8 @@ pub fn compute_speedup_with_ci<R: rand::Rng>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand_chacha::ChaCha8Rng;
     use rand::SeedableRng;
+    use rand_chacha::ChaCha8Rng;
 
     #[test]
     fn test_compute_log_ratios_equal_times() {

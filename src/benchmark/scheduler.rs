@@ -864,10 +864,7 @@ impl<'a> Scheduler<'a> {
 
         println!();
         println!("{}", "Statistical Analysis".bold());
-        println!(
-            "  Reference: {}",
-            reference_name.cyan()
-        );
+        println!("  Reference: {}", reference_name.cyan());
         println!(
             "  Confidence: {:.0}%, Practical delta: {:.1}%",
             self.options.confidence * 100.0,
@@ -882,10 +879,7 @@ impl<'a> Scheduler<'a> {
                 Verdict::NoClearDifference => result.verdict.description().yellow(),
             };
 
-            println!(
-                "  {} vs reference:",
-                result.command.cyan()
-            );
+            println!("  {} vs reference:", result.command.cyan());
             println!(
                 "    Speedup: {:.2}x ({:.0}% CI: {:.2}-{:.2})",
                 result.speedup,
@@ -893,10 +887,7 @@ impl<'a> Scheduler<'a> {
                 result.ci_lower,
                 result.ci_upper
             );
-            println!(
-                "    Verdict: {}",
-                verdict_colored.bold()
-            );
+            println!("    Verdict: {}", verdict_colored.bold());
             println!();
         }
     }
@@ -1257,11 +1248,8 @@ fn scheduler_analysis_with_interleaved() -> Result<()> {
 #[test]
 fn scheduler_analysis_without_interleaved() -> Result<()> {
     // Analysis should NOT run without interleaved mode
-    let (results, analysis) = generate_results_with_analysis(&[
-        "--runs=10",
-        "sleep 0.1",
-        "sleep 0.2",
-    ])?;
+    let (results, analysis) =
+        generate_results_with_analysis(&["--runs=10", "sleep 0.1", "sleep 0.2"])?;
 
     assert_eq!(results.len(), 2);
     // Analysis should be None when not using interleaved mode
@@ -1302,15 +1290,80 @@ fn scheduler_analysis_reproducible_with_seed() -> Result<()> {
 #[test]
 fn scheduler_analysis_single_command_no_analysis() -> Result<()> {
     // Single command should not produce analysis
-    let (results, analysis) = generate_results_with_analysis(&[
-        "--runs=10",
-        "--interleave",
-        "sleep 0.1",
-    ])?;
+    let (results, analysis) =
+        generate_results_with_analysis(&["--runs=10", "--interleave", "sleep 0.1"])?;
 
     assert_eq!(results.len(), 1);
     // With only one command, no analysis possible
     assert!(analysis.is_none());
+
+    Ok(())
+}
+
+#[test]
+fn scheduler_robust_mode_enables_interleave() -> Result<()> {
+    // --robust should enable interleaved mode and analysis
+    let results = generate_results_with_options(
+        &["--robust", "sleep 0.1", "sleep 0.2"],
+        Some(&|options| {
+            assert!(options.robust, "robust should be true");
+            assert!(
+                options.interleave,
+                "interleave should be enabled by robust mode"
+            );
+            assert_eq!(
+                options.run_bounds.min, 20,
+                "min runs should be 20 in robust mode"
+            );
+        }),
+    )?;
+
+    // Should have 2 commands
+    assert_eq!(results.len(), 2);
+
+    // Should have at least 20 runs each (robust mode sets min=20)
+    assert!(results[0].times.as_ref().unwrap().len() >= 20);
+    assert!(results[1].times.as_ref().unwrap().len() >= 20);
+
+    Ok(())
+}
+
+#[test]
+fn scheduler_robust_mode_with_analysis() -> Result<()> {
+    // --robust should produce analysis results
+    let (results, analysis) =
+        generate_results_with_analysis(&["--robust", "--seed=42", "sleep 0.1", "sleep 0.2"])?;
+
+    assert_eq!(results.len(), 2);
+    assert!(analysis.is_some(), "robust mode should produce analysis");
+
+    let analysis = analysis.unwrap();
+    assert_eq!(analysis.len(), 1);
+
+    // Second command is 2x slower, so speedup should be around 0.5
+    assert!(
+        analysis[0].speedup > 0.4 && analysis[0].speedup < 0.6,
+        "Speedup should be ~0.5, got {}",
+        analysis[0].speedup
+    );
+
+    Ok(())
+}
+
+#[test]
+fn scheduler_robust_mode_allows_confidence_override() -> Result<()> {
+    // --robust with explicit --confidence should use the override
+    let (_, analysis) = generate_results_with_analysis(&[
+        "--robust",
+        "--confidence=0.99",
+        "--seed=42",
+        "sleep 0.1",
+        "sleep 0.2",
+    ])?;
+
+    let analysis = analysis.unwrap();
+    // The confidence level should be 0.99, not 0.95
+    assert_eq!(analysis[0].confidence, 0.99);
 
     Ok(())
 }

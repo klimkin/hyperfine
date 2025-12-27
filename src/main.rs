@@ -43,6 +43,10 @@ fn run() -> Result<()> {
 
     options.validate_against_command_list(&commands)?;
 
+    // Print robust mode info if applicable
+    let num_commands = commands.num_commands(options.reference_command.is_some());
+    options.print_robust_info(num_commands);
+
     let mut scheduler = Scheduler::new(&commands, &options, &export_manager);
     scheduler.run_benchmarks()?;
     scheduler.run_analysis();

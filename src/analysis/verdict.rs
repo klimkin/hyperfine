@@ -135,13 +135,19 @@ mod tests {
     fn test_verdict_display() {
         assert_eq!(format!("{}", Verdict::Faster), "faster");
         assert_eq!(format!("{}", Verdict::Slower), "slower");
-        assert_eq!(format!("{}", Verdict::NoClearDifference), "no clear difference");
+        assert_eq!(
+            format!("{}", Verdict::NoClearDifference),
+            "no clear difference"
+        );
     }
 
     #[test]
     fn test_verdict_description() {
         assert_eq!(Verdict::Faster.description(), "faster");
         assert_eq!(Verdict::Slower.description(), "slower");
-        assert_eq!(Verdict::NoClearDifference.description(), "no clear difference");
+        assert_eq!(
+            Verdict::NoClearDifference.description(),
+            "no clear difference"
+        );
     }
 }

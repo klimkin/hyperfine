@@ -155,6 +155,30 @@ Available options:
 The JSON export includes analysis results when available, containing speedup, confidence intervals,
 and the verdict for each comparison.
 
+### Robust comparison mode
+
+For users who want statistically defensible A/B comparisons without needing to understand all
+the statistical options, hyperfine offers a `--robust` flag that enables best practices:
+
+```sh
+hyperfine --robust 'command1' 'command2'
+```
+
+The `--robust` flag is equivalent to:
+- `--interleave` (enables paired sampling for better comparison)
+- `--confidence 0.95` (95% confidence intervals)
+- `--practical-delta 0.01` (1% practical significance threshold)
+- `--resamples 10000` (stable bootstrap estimates)
+- `--output pipe` (avoids /dev/null optimization detection)
+- Minimum 20 runs (ensures reliable statistical estimates)
+
+You can override individual settings if needed:
+```sh
+hyperfine --robust --confidence 0.99 'command1' 'command2'
+```
+
+This mode is best for comparing two or more commands when you need rigorous, reproducible results.
+
 ### Intermediate shell
 
 By default, commands are executed using a predefined shell (`/bin/sh` on Unix, `cmd.exe` on Windows).

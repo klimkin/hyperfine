@@ -446,6 +446,16 @@ fn build_command() -> Command {
                    statistical analysis results.")
         )
         .arg(
+            Arg::new("robust")
+            .long("robust")
+            .action(ArgAction::SetTrue)
+            .help("Enable robust comparison mode for statistically defensible A/B benchmarks. \
+                   Equivalent to: --interleave --confidence 0.95 --practical-delta 0.01 \
+                   --resamples 10000 --output pipe, with a minimum of 20 runs. \
+                   Individual flags can be used to override specific defaults. \
+                   Best used when comparing two or more commands.")
+        )
+        .arg(
             Arg::new("debug-mode")
             .long("debug-mode")
             .action(ArgAction::SetTrue)

@@ -18,7 +18,11 @@ fn test_full_analysis_pipeline() {
 
     // Compute speedup
     let speedup = speedup_from_log_ratios(&log_ratios);
-    assert!(speedup > 1.9 && speedup < 2.1, "Speedup should be ~2.0, got {}", speedup);
+    assert!(
+        speedup > 1.9 && speedup < 2.1,
+        "Speedup should be ~2.0, got {}",
+        speedup
+    );
 
     // Compute CI
     let (ci_lower, ci_upper) = bootstrap_percentile_ci(&log_ratios, 0.95, 10000, &mut rng);

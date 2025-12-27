@@ -5,13 +5,13 @@ use std::process::{Command, Stdio};
 use std::{cmp, env, fmt, io};
 
 use anyhow::ensure;
+use anyhow::Result;
+use clap::parser::ValueSource;
 use clap::ArgMatches;
 
 use crate::command::Commands;
 use crate::error::OptionsError;
 use crate::util::units::{Second, Unit};
-
-use anyhow::Result;
 
 #[cfg(not(windows))]
 pub const DEFAULT_SHELL: &str = "sh";
@@ -261,6 +261,9 @@ pub struct Options {
 
     /// Optional random seed for reproducible bootstrap analysis
     pub seed: Option<u64>,
+
+    /// Whether robust comparison mode is enabled
+    pub robust: bool,
 }
 
 impl Default for Options {
@@ -288,6 +291,7 @@ impl Default for Options {
             practical_delta: 0.01,
             resamples: 10000,
             seed: None,
+            robust: false,
         }
     }
 }
@@ -525,7 +529,57 @@ impl Options {
             );
         }
 
+        // Handle --robust mode: apply defaults for options not explicitly set
+        options.robust = matches.get_flag("robust");
+        if options.robust {
+            // Always enable interleave for paired analysis
+            options.interleave = true;
+
+            // Set output to pipe if not explicitly set (avoids /dev/null optimizations)
+            let output_explicitly_set =
+                matches.value_source("output") == Some(ValueSource::CommandLine);
+            if !output_explicitly_set && !matches.get_flag("show-output") {
+                options.command_output_policies = vec![CommandOutputPolicy::Pipe];
+            }
+
+            // Ensures min runs to 20 for statistical reliability
+            options.run_bounds.min = 20;
+            if let Some(max) = options.run_bounds.max {
+                if max < 20 {
+                    options.run_bounds.max = Some(20);
+                }
+            }
+        }
+
         Ok(options)
+    }
+
+    /// Print informational messages about robust mode if enabled
+    pub fn print_robust_info(&self, num_commands: usize) {
+        use colored::*;
+
+        if !self.robust {
+            return;
+        }
+
+        if self.output_style == OutputStyleOption::Disabled {
+            return;
+        }
+
+        // Info about robust mode
+        eprintln!(
+            "{}: --robust mode uses minimum 20 runs for reliable confidence intervals",
+            "Note".bold().cyan()
+        );
+
+        // Warning if only one command
+        if num_commands < 2 {
+            eprintln!(
+                "{}: --robust is designed for comparing multiple commands. \
+                 With a single command, statistical comparison will not be performed.",
+                "Note".bold().cyan()
+            );
+        }
     }
 
     pub fn validate_against_command_list(&mut self, commands: &Commands) -> Result<()> {
