@@ -400,6 +400,16 @@ fn build_command() -> Command {
                    `--runs` option.")
         )
         .arg(
+            Arg::new("interleave")
+            .long("interleave")
+            .action(ArgAction::SetTrue)
+            .help("Interleave benchmark runs across commands. Instead of running all iterations \
+                   of command A before command B (sequential mode), this alternates between \
+                   commands in rounds: A1, B1, A2, B2, etc. This reduces systematic bias from \
+                   thermal throttling, background load changes, and CPU frequency scaling, \
+                   making measurements more comparable. Requires at least two commands.")
+        )
+        .arg(
             Arg::new("debug-mode")
             .long("debug-mode")
             .action(ArgAction::SetTrue)

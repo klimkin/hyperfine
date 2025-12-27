@@ -246,6 +246,9 @@ pub struct Options {
 
     /// Which time unit to use when displaying results
     pub time_unit: Option<Unit>,
+
+    /// Whether to interleave benchmark runs across commands
+    pub interleave: bool,
 }
 
 impl Default for Options {
@@ -268,6 +271,7 @@ impl Default for Options {
             command_output_policies: vec![CommandOutputPolicy::Null],
             time_unit: None,
             command_input_policy: CommandInputPolicy::Null,
+            interleave: false,
         }
     }
 }
@@ -463,6 +467,8 @@ impl Options {
         } else {
             CommandInputPolicy::Null
         };
+
+        options.interleave = matches.get_flag("interleave");
 
         Ok(options)
     }

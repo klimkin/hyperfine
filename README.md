@@ -110,6 +110,25 @@ option:
 hyperfine -L compiler gcc,clang '{compiler} -O2 main.cpp'
 ```
 
+### Interleaved benchmarks
+
+By default, hyperfine runs all iterations of the first command before moving to the second command
+(sequential mode). This can be problematic when comparing commands because systematic factors like
+thermal throttling, background load changes, or CPU frequency scaling may affect one command more
+than another.
+
+The `--interleave` flag enables round-robin execution, alternating between commands:
+```sh
+hyperfine --interleave 'command1' 'command2'
+```
+
+Instead of running: A₁, A₂, A₃, ..., B₁, B₂, B₃, ...
+
+Interleaved mode runs: A₁, B₁, A₂, B₂, A₃, B₃, ...
+
+This creates naturally paired samples that help cancel out time-varying effects, making measurements
+more comparable.
+
 ### Intermediate shell
 
 By default, commands are executed using a predefined shell (`/bin/sh` on Unix, `cmd.exe` on Windows).
