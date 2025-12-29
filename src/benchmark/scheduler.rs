@@ -1,52 +1,26 @@
 use super::benchmark_result::BenchmarkResult;
 use super::executor::{BenchmarkIteration, Executor, MockExecutor, RawExecutor, ShellExecutor};
-use super::timing_result::TimingResult;
-use super::{relative_speed, Benchmark, MIN_EXECUTION_TIME};
+use super::{
+    build_conclusion_command, build_preparation_command, calculate_run_count, generate_warnings,
+    print_benchmark_summary, print_warnings, relative_speed, run_cleanup_command,
+    run_conclusion_command_optional, run_preparation_command_optional, run_setup_command,
+    Benchmark, CommandAccumulator,
+};
 use colored::*;
-use std::cmp;
 use std::cmp::Ordering;
 
 use crate::analysis::{compute_speedup_with_ci, determine_verdict, AnalysisResult, Verdict};
 use crate::command::{Command, Commands};
 use crate::export::ExportManager;
-use crate::options::{
-    CmdFailureAction, CommandOutputPolicy, ExecutorKind, Options, OutputStyleOption, SortOrder,
-};
-use crate::outlier_detection::{modified_zscores, OUTLIER_THRESHOLD};
-use crate::output::format::{format_duration, format_duration_unit};
+use crate::options::{ExecutorKind, Options, OutputStyleOption, SortOrder};
+use crate::output::format::format_duration;
 use crate::output::progress_bar::get_progress_bar;
-use crate::output::warnings::{OutlierWarningOptions, Warnings};
 use crate::util::exit_code::extract_exit_code;
-use crate::util::min_max::{max, min};
-use crate::util::units::Second;
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
-use statistical::{mean, median, standard_deviation};
-
-/// Accumulator for collecting benchmark timing data during interleaved execution
-struct CommandAccumulator {
-    times_real: Vec<Second>,
-    times_user: Vec<Second>,
-    times_system: Vec<Second>,
-    memory_usage_byte: Vec<u64>,
-    exit_codes: Vec<Option<i32>>,
-    all_succeeded: bool,
-}
-
-impl CommandAccumulator {
-    fn new() -> Self {
-        CommandAccumulator {
-            times_real: vec![],
-            times_user: vec![],
-            times_system: vec![],
-            memory_usage_byte: vec![],
-            exit_codes: vec![],
-            all_succeeded: true,
-        }
-    }
-}
+use statistical::mean;
 
 pub struct Scheduler<'a> {
     commands: &'a Commands<'a>,
@@ -122,18 +96,11 @@ impl<'a> Scheduler<'a> {
             .iter()
             .enumerate()
             .map(|(number, cmd)| {
-                self.options.preparation_command.as_ref().map(|values| {
-                    let preparation_command = if values.len() == 1 {
-                        &values[0]
-                    } else {
-                        &values[number]
-                    };
-                    Command::new_parametrized(
-                        None,
-                        preparation_command,
-                        cmd.get_parameters().iter().cloned(),
-                    )
-                })
+                build_preparation_command(
+                    self.options,
+                    number,
+                    cmd.get_parameters().iter().cloned(),
+                )
             })
             .collect();
 
@@ -141,18 +108,7 @@ impl<'a> Scheduler<'a> {
             .iter()
             .enumerate()
             .map(|(number, cmd)| {
-                self.options.conclusion_command.as_ref().map(|values| {
-                    let conclusion_command = if values.len() == 1 {
-                        &values[0]
-                    } else {
-                        &values[number]
-                    };
-                    Command::new_parametrized(
-                        None,
-                        conclusion_command,
-                        cmd.get_parameters().iter().cloned(),
-                    )
-                })
+                build_conclusion_command(self.options, number, cmd.get_parameters().iter().cloned())
             })
             .collect();
 
@@ -176,7 +132,12 @@ impl<'a> Scheduler<'a> {
         // Run setup commands for all benchmarks
         for (number, cmd) in commands.iter().enumerate() {
             let output_policy = &self.options.command_output_policies[number];
-            self.run_setup_command(executor, cmd, output_policy)?;
+            run_setup_command(
+                executor,
+                self.options,
+                cmd.get_parameters().iter().cloned(),
+                output_policy,
+            )?;
         }
 
         // Warmup phase: run warmups for each command before timed rounds
@@ -196,7 +157,7 @@ impl<'a> Scheduler<'a> {
                 for (number, cmd) in commands.iter().enumerate() {
                     let output_policy = &self.options.command_output_policies[number];
 
-                    let _ = self.run_preparation_command_optional(
+                    let _ = run_preparation_command_optional(
                         executor,
                         preparation_commands[number].as_ref(),
                         output_policy,
@@ -209,7 +170,7 @@ impl<'a> Scheduler<'a> {
                         output_policy,
                     )?;
 
-                    let _ = self.run_conclusion_command_optional(
+                    let _ = run_conclusion_command_optional(
                         executor,
                         conclusion_commands[number].as_ref(),
                         output_policy,
@@ -232,7 +193,7 @@ impl<'a> Scheduler<'a> {
         for (number, cmd) in commands.iter().enumerate() {
             let output_policy = &self.options.command_output_policies[number];
 
-            let preparation_result = self.run_preparation_command_optional(
+            let preparation_result = run_preparation_command_optional(
                 executor,
                 preparation_commands[number].as_ref(),
                 output_policy,
@@ -247,7 +208,7 @@ impl<'a> Scheduler<'a> {
                 output_policy,
             )?;
 
-            let conclusion_result = self.run_conclusion_command_optional(
+            let conclusion_result = run_conclusion_command_optional(
                 executor,
                 conclusion_commands[number].as_ref(),
                 output_policy,
@@ -263,30 +224,17 @@ impl<'a> Scheduler<'a> {
                 max_initial_time = initial_time;
             }
 
-            accumulators[number].times_real.push(res.time_real);
-            accumulators[number].times_user.push(res.time_user);
-            accumulators[number].times_system.push(res.time_system);
-            accumulators[number]
-                .memory_usage_byte
-                .push(res.memory_usage_byte);
-            accumulators[number]
-                .exit_codes
-                .push(extract_exit_code(status));
-            accumulators[number].all_succeeded =
-                accumulators[number].all_succeeded && status.success();
+            accumulators[number].add_result(&res, extract_exit_code(status), status.success());
         }
 
-        let runs_in_min_time = (self.options.min_benchmarking_time / max_initial_time) as u64;
-
-        let run_count = {
-            let min = cmp::max(runs_in_min_time, self.options.run_bounds.min);
-            self.options
-                .run_bounds
-                .max
-                .as_ref()
-                .map(|max| cmp::min(min, *max))
-                .unwrap_or(min)
-        };
+        // Use the slowest command's time for run count calculation
+        let run_count = calculate_run_count(
+            self.options,
+            max_initial_time,
+            0.0, // Already included in max_initial_time
+            0.0, // Already included in max_initial_time
+            0.0, // Already included in max_initial_time
+        );
 
         self.build_and_update_results(commands, &accumulators);
         self.export_manager.write_results(&self.results, true)?;
@@ -309,7 +257,7 @@ impl<'a> Scheduler<'a> {
             for (number, cmd) in commands.iter().enumerate() {
                 let output_policy = &self.options.command_output_policies[number];
 
-                let _ = self.run_preparation_command_optional(
+                let _ = run_preparation_command_optional(
                     executor,
                     preparation_commands[number].as_ref(),
                     output_policy,
@@ -336,23 +284,13 @@ impl<'a> Scheduler<'a> {
                     output_policy,
                 )?;
 
-                let _ = self.run_conclusion_command_optional(
+                let _ = run_conclusion_command_optional(
                     executor,
                     conclusion_commands[number].as_ref(),
                     output_policy,
                 )?;
 
-                accumulators[number].times_real.push(res.time_real);
-                accumulators[number].times_user.push(res.time_user);
-                accumulators[number].times_system.push(res.time_system);
-                accumulators[number]
-                    .memory_usage_byte
-                    .push(res.memory_usage_byte);
-                accumulators[number]
-                    .exit_codes
-                    .push(extract_exit_code(status));
-                accumulators[number].all_succeeded =
-                    accumulators[number].all_succeeded && status.success();
+                accumulators[number].add_result(&res, extract_exit_code(status), status.success());
 
                 if let Some(bar) = progress_bar.as_ref() {
                     bar.inc(1);
@@ -371,7 +309,12 @@ impl<'a> Scheduler<'a> {
         // Run cleanup commands for all benchmarks
         for (number, cmd) in commands.iter().enumerate() {
             let output_policy = &self.options.command_output_policies[number];
-            self.run_cleanup_command(executor, cmd, output_policy)?;
+            run_cleanup_command(
+                executor,
+                self.options,
+                cmd.get_parameters().iter().cloned(),
+                output_policy,
+            )?;
         }
 
         // Build final results and print summaries
@@ -389,42 +332,7 @@ impl<'a> Scheduler<'a> {
     ) {
         self.results.clear();
         for (number, cmd) in commands.iter().enumerate() {
-            let acc = &accumulators[number];
-            let times_real = &acc.times_real;
-            let times_user = &acc.times_user;
-            let times_system = &acc.times_system;
-
-            let t_mean = mean(times_real);
-            let t_stddev = if times_real.len() > 1 {
-                Some(standard_deviation(times_real, Some(t_mean)))
-            } else {
-                None
-            };
-            let t_median = median(times_real);
-            let t_min = min(times_real);
-            let t_max = max(times_real);
-            let user_mean = mean(times_user);
-            let system_mean = mean(times_system);
-
-            self.results.push(BenchmarkResult {
-                command: cmd.get_name(),
-                command_with_unused_parameters: cmd.get_name_with_unused_parameters(),
-                mean: t_mean,
-                stddev: t_stddev,
-                median: t_median,
-                user: user_mean,
-                system: system_mean,
-                min: t_min,
-                max: t_max,
-                times: Some(times_real.clone()),
-                memory_usage_byte: Some(acc.memory_usage_byte.clone()),
-                exit_codes: acc.exit_codes.clone(),
-                parameters: cmd
-                    .get_parameters()
-                    .iter()
-                    .map(|(name, value)| (name.to_string(), value.to_string()))
-                    .collect(),
-            });
+            self.results.push(accumulators[number].build_result(cmd));
         }
     }
 
@@ -438,11 +346,15 @@ impl<'a> Scheduler<'a> {
             return;
         }
 
+        let has_prepare = self
+            .options
+            .preparation_command
+            .as_ref()
+            .map(|v| !v.is_empty())
+            .unwrap_or(false);
+
         for (number, cmd) in commands.iter().enumerate() {
             let acc = &accumulators[number];
-            let times_real = &acc.times_real;
-            let times_user = &acc.times_user;
-            let times_system = &acc.times_system;
 
             println!(
                 "{}{}: {}",
@@ -451,217 +363,20 @@ impl<'a> Scheduler<'a> {
                 cmd.get_name_with_unused_parameters(),
             );
 
-            let t_num = times_real.len();
-            let t_mean = mean(times_real);
-            let t_stddev = if times_real.len() > 1 {
-                Some(standard_deviation(times_real, Some(t_mean)))
-            } else {
-                None
-            };
-            let t_min = min(times_real);
-            let t_max = max(times_real);
+            let stats = acc.get_statistics();
+            print_benchmark_summary(&stats, acc.run_count(), self.options.time_unit);
 
-            let user_mean = mean(times_user);
-            let system_mean = mean(times_system);
-
-            let (mean_str, time_unit) = format_duration_unit(t_mean, self.options.time_unit);
-            let min_str = format_duration(t_min, Some(time_unit));
-            let max_str = format_duration(t_max, Some(time_unit));
-            let num_str = format!("{t_num} runs");
-
-            let user_str = format_duration(user_mean, Some(time_unit));
-            let system_str = format_duration(system_mean, Some(time_unit));
-
-            if times_real.len() == 1 {
-                println!(
-                    "  Time ({} ≡):        {:>8}  {:>8}     [User: {}, System: {}]",
-                    "abs".green().bold(),
-                    mean_str.green().bold(),
-                    "        ",
-                    user_str.blue(),
-                    system_str.blue()
-                );
-            } else {
-                let stddev_str = format_duration(t_stddev.unwrap(), Some(time_unit));
-
-                println!(
-                    "  Time ({} ± {}):     {:>8} ± {:>8}    [User: {}, System: {}]",
-                    "mean".green().bold(),
-                    "σ".green(),
-                    mean_str.green().bold(),
-                    stddev_str.green(),
-                    user_str.blue(),
-                    system_str.blue()
-                );
-
-                println!(
-                    "  Range ({} … {}):   {:>8} … {:>8}    {}",
-                    "min".cyan(),
-                    "max".purple(),
-                    min_str.cyan(),
-                    max_str.purple(),
-                    num_str.dimmed()
-                );
-            }
-
-            // Warnings
-            let mut warnings = vec![];
-
-            if matches!(self.options.executor_kind, ExecutorKind::Shell(_))
-                && times_real.iter().any(|&t| t < MIN_EXECUTION_TIME)
-            {
-                warnings.push(Warnings::FastExecutionTime);
-            }
-
-            if !acc.all_succeeded {
-                warnings.push(Warnings::NonZeroExitCode);
-            }
-
-            let scores = modified_zscores(times_real);
-            let outlier_warning_options = OutlierWarningOptions {
-                warmup_in_use: self.options.warmup_count > 0,
-                prepare_in_use: self
-                    .options
-                    .preparation_command
-                    .as_ref()
-                    .map(|v| v.len())
-                    .unwrap_or(0)
-                    > 0,
-            };
-
-            if scores[0] > OUTLIER_THRESHOLD {
-                warnings.push(Warnings::SlowInitialRun(
-                    times_real[0],
-                    outlier_warning_options,
-                ));
-            } else if scores.iter().any(|&s| s.abs() > OUTLIER_THRESHOLD) {
-                warnings.push(Warnings::OutliersDetected(outlier_warning_options));
-            }
-
-            if !warnings.is_empty() {
-                eprintln!(" ");
-                for warning in &warnings {
-                    eprintln!("  {}: {}", "Warning".yellow(), warning);
-                }
-            }
+            let warnings = generate_warnings(
+                &acc.times_real,
+                acc.all_succeeded,
+                &self.options.executor_kind,
+                self.options.warmup_count,
+                has_prepare,
+            );
+            print_warnings(&warnings);
 
             println!(" ");
         }
-    }
-
-    /// Run setup command for a benchmark
-    fn run_setup_command(
-        &self,
-        executor: &dyn Executor,
-        cmd: &Command<'_>,
-        output_policy: &CommandOutputPolicy,
-    ) -> Result<TimingResult> {
-        let command = self.options.setup_command.as_ref().map(|setup_command| {
-            Command::new_parametrized(None, setup_command, cmd.get_parameters().iter().cloned())
-        });
-
-        let error_output = "The setup command terminated with a non-zero exit code. \
-                            Append ' || true' to the command if you are sure that this can be ignored.";
-
-        Ok(command
-            .map(|c| self.run_intermediate_command(executor, &c, error_output, output_policy))
-            .transpose()?
-            .unwrap_or_default())
-    }
-
-    /// Run cleanup command for a benchmark
-    fn run_cleanup_command(
-        &self,
-        executor: &dyn Executor,
-        cmd: &Command<'_>,
-        output_policy: &CommandOutputPolicy,
-    ) -> Result<TimingResult> {
-        let command = self
-            .options
-            .cleanup_command
-            .as_ref()
-            .map(|cleanup_command| {
-                Command::new_parametrized(
-                    None,
-                    cleanup_command,
-                    cmd.get_parameters().iter().cloned(),
-                )
-            });
-
-        let error_output = "The cleanup command terminated with a non-zero exit code. \
-                            Append ' || true' to the command if you are sure that this can be ignored.";
-
-        Ok(command
-            .map(|c| self.run_intermediate_command(executor, &c, error_output, output_policy))
-            .transpose()?
-            .unwrap_or_default())
-    }
-
-    /// Run preparation command
-    fn run_preparation_command(
-        &self,
-        executor: &dyn Executor,
-        command: &Command<'_>,
-        output_policy: &CommandOutputPolicy,
-    ) -> Result<TimingResult> {
-        let error_output = "The preparation command terminated with a non-zero exit code. \
-                            Append ' || true' to the command if you are sure that this can be ignored.";
-
-        self.run_intermediate_command(executor, command, error_output, output_policy)
-    }
-
-    fn run_preparation_command_optional(
-        &self,
-        executor: &dyn Executor,
-        command: Option<&Command<'_>>,
-        output_policy: &CommandOutputPolicy,
-    ) -> Result<Option<TimingResult>> {
-        command
-            .map(|cmd| self.run_preparation_command(executor, cmd, output_policy))
-            .transpose()
-    }
-
-    /// Run conclusion command
-    fn run_conclusion_command(
-        &self,
-        executor: &dyn Executor,
-        command: &Command<'_>,
-        output_policy: &CommandOutputPolicy,
-    ) -> Result<TimingResult> {
-        let error_output = "The conclusion command terminated with a non-zero exit code. \
-                            Append ' || true' to the command if you are sure that this can be ignored.";
-
-        self.run_intermediate_command(executor, command, error_output, output_policy)
-    }
-
-    fn run_conclusion_command_optional(
-        &self,
-        executor: &dyn Executor,
-        command: Option<&Command<'_>>,
-        output_policy: &CommandOutputPolicy,
-    ) -> Result<Option<TimingResult>> {
-        command
-            .map(|cmd| self.run_conclusion_command(executor, cmd, output_policy))
-            .transpose()
-    }
-
-    /// Run an intermediate command (setup, cleanup, prepare, or conclude)
-    fn run_intermediate_command(
-        &self,
-        executor: &dyn Executor,
-        command: &Command<'_>,
-        error_output: &'static str,
-        output_policy: &CommandOutputPolicy,
-    ) -> Result<TimingResult> {
-        executor
-            .run_command_and_measure(
-                command,
-                BenchmarkIteration::NonBenchmarkRun,
-                Some(CmdFailureAction::RaiseError),
-                output_policy,
-            )
-            .map(|r| r.0)
-            .map_err(|_| anyhow!(error_output))
     }
 
     pub fn print_relative_speed_comparison(&self) {
