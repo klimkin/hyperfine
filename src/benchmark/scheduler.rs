@@ -14,7 +14,7 @@ use crate::command::{Command, Commands};
 use crate::export::ExportManager;
 use crate::options::{ExecutorKind, Options, OutputStyleOption, SortOrder};
 use crate::output::format::format_duration;
-use crate::output::progress_bar::get_progress_bar;
+use crate::output::progress_bar::{get_multi_progress_bar, get_progress_bar};
 use crate::util::exit_code::extract_exit_code;
 
 use anyhow::Result;
@@ -239,18 +239,23 @@ impl<'a> Scheduler<'a> {
         self.build_and_update_results(commands, &accumulators);
         self.export_manager.write_results(&self.results, true)?;
 
-        // Set up progress bar for remaining rounds
+        // Set up multi-progress bar for remaining rounds (one bar per command)
         let remaining_rounds = run_count - 1;
-        let total_remaining_runs = remaining_rounds * num_commands as u64;
-        let progress_bar = if self.options.output_style != OutputStyleOption::Disabled {
-            Some(get_progress_bar(
-                total_remaining_runs,
-                "Interleaved benchmarking",
-                self.options.output_style,
-            ))
-        } else {
-            None
-        };
+        let multi_progress =
+            get_multi_progress_bar(num_commands, remaining_rounds, self.options.output_style);
+
+        // Update initial message with estimates from first round
+        if let Some((_, ref bars)) = multi_progress {
+            for (number, bar) in bars.iter().enumerate() {
+                let mean_time = mean(&accumulators[number].times_real);
+                let mean_str = format_duration(mean_time, self.options.time_unit);
+                bar.set_message(format!(
+                    "Command {} estimate: {}",
+                    number + 1,
+                    mean_str.green()
+                ));
+            }
+        }
 
         // Run remaining rounds in interleaved fashion
         for round in 1..run_count {
@@ -262,20 +267,6 @@ impl<'a> Scheduler<'a> {
                     preparation_commands[number].as_ref(),
                     output_policy,
                 )?;
-
-                // Update progress bar message with current estimate
-                if let Some(bar) = progress_bar.as_ref() {
-                    let cmd_name = cmd.get_name();
-                    let mean_time = mean(&accumulators[number].times_real);
-                    let mean_str = format_duration(mean_time, self.options.time_unit);
-                    bar.set_message(format!(
-                        "Round {}/{}: {} (est: {})",
-                        round + 1,
-                        run_count,
-                        cmd_name,
-                        mean_str.to_string().green()
-                    ));
-                }
 
                 let (res, status) = executor.run_command_and_measure(
                     cmd,
@@ -292,8 +283,16 @@ impl<'a> Scheduler<'a> {
 
                 accumulators[number].add_result(&res, extract_exit_code(status), status.success());
 
-                if let Some(bar) = progress_bar.as_ref() {
-                    bar.inc(1);
+                // Update this command's progress bar
+                if let Some((_, ref bars)) = multi_progress {
+                    let mean_time = mean(&accumulators[number].times_real);
+                    let mean_str = format_duration(mean_time, self.options.time_unit);
+                    bars[number].set_message(format!(
+                        "Command {} estimate: {}",
+                        number + 1,
+                        mean_str.green()
+                    ));
+                    bars[number].inc(1);
                 }
             }
 
@@ -302,8 +301,10 @@ impl<'a> Scheduler<'a> {
             self.export_manager.write_results(&self.results, true)?;
         }
 
-        if let Some(bar) = progress_bar.as_ref() {
-            bar.finish_and_clear();
+        if let Some((_, bars)) = multi_progress {
+            for bar in bars {
+                bar.finish_and_clear();
+            }
         }
 
         // Run cleanup commands for all benchmarks
