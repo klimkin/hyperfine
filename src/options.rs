@@ -5,13 +5,13 @@ use std::process::{Command, Stdio};
 use std::{cmp, env, fmt, io};
 
 use anyhow::ensure;
+use anyhow::Result;
+use clap::parser::ValueSource;
 use clap::ArgMatches;
 
 use crate::command::Commands;
 use crate::error::OptionsError;
 use crate::util::units::{Second, Unit};
-
-use anyhow::Result;
 
 #[cfg(not(windows))]
 pub const DEFAULT_SHELL: &str = "sh";
@@ -246,6 +246,24 @@ pub struct Options {
 
     /// Which time unit to use when displaying results
     pub time_unit: Option<Unit>,
+
+    /// Whether to interleave benchmark runs across commands
+    pub interleave: bool,
+
+    /// Confidence level for bootstrap confidence intervals (0.5 to 0.99)
+    pub confidence: f64,
+
+    /// Practical significance threshold for speedup verdicts
+    pub practical_delta: f64,
+
+    /// Number of bootstrap resamples for CI estimation
+    pub resamples: usize,
+
+    /// Optional random seed for reproducible bootstrap analysis
+    pub seed: Option<u64>,
+
+    /// Whether robust comparison mode is enabled
+    pub robust: bool,
 }
 
 impl Default for Options {
@@ -268,6 +286,12 @@ impl Default for Options {
             command_output_policies: vec![CommandOutputPolicy::Null],
             time_unit: None,
             command_input_policy: CommandInputPolicy::Null,
+            interleave: false,
+            confidence: 0.95,
+            practical_delta: 0.01,
+            resamples: 10000,
+            seed: None,
+            robust: false,
         }
     }
 }
@@ -464,7 +488,98 @@ impl Options {
             CommandInputPolicy::Null
         };
 
+        options.interleave = matches.get_flag("interleave");
+
+        // Parse statistical analysis options
+        if let Some(confidence_str) = matches.get_one::<String>("confidence") {
+            let confidence = confidence_str
+                .parse::<f64>()
+                .map_err(|e| OptionsError::FloatParsingError("confidence", e))?;
+            if !(0.5..=0.99).contains(&confidence) {
+                return Err(OptionsError::InvalidConfidenceLevel(confidence));
+            }
+            options.confidence = confidence;
+        }
+
+        if let Some(delta_str) = matches.get_one::<String>("practical-delta") {
+            let delta = delta_str
+                .parse::<f64>()
+                .map_err(|e| OptionsError::FloatParsingError("practical-delta", e))?;
+            if !(0.0..=1.0).contains(&delta) {
+                return Err(OptionsError::InvalidPracticalDelta(delta));
+            }
+            options.practical_delta = delta;
+        }
+
+        if let Some(resamples_str) = matches.get_one::<String>("resamples") {
+            let resamples = resamples_str
+                .parse::<usize>()
+                .map_err(|e| OptionsError::IntParsingError("resamples", e))?;
+            if resamples < 100 {
+                return Err(OptionsError::InvalidResamples(resamples));
+            }
+            options.resamples = resamples;
+        }
+
+        if let Some(seed_str) = matches.get_one::<String>("seed") {
+            options.seed = Some(
+                seed_str
+                    .parse::<u64>()
+                    .map_err(|e| OptionsError::IntParsingError("seed", e))?,
+            );
+        }
+
+        // Handle --robust mode: apply defaults for options not explicitly set
+        options.robust = matches.get_flag("robust");
+        if options.robust {
+            // Always enable interleave for paired analysis
+            options.interleave = true;
+
+            // Set output to pipe if not explicitly set (avoids /dev/null optimizations)
+            let output_explicitly_set =
+                matches.value_source("output") == Some(ValueSource::CommandLine);
+            if !output_explicitly_set && !matches.get_flag("show-output") {
+                options.command_output_policies = vec![CommandOutputPolicy::Pipe];
+            }
+
+            // Ensures min runs to 20 for statistical reliability
+            options.run_bounds.min = 20;
+            if let Some(max) = options.run_bounds.max {
+                if max < 20 {
+                    options.run_bounds.max = Some(20);
+                }
+            }
+        }
+
         Ok(options)
+    }
+
+    /// Print informational messages about robust mode if enabled
+    pub fn print_robust_info(&self, num_commands: usize) {
+        use colored::*;
+
+        if !self.robust {
+            return;
+        }
+
+        if self.output_style == OutputStyleOption::Disabled {
+            return;
+        }
+
+        // Info about robust mode
+        eprintln!(
+            "{}: --robust mode uses minimum 20 runs for reliable confidence intervals",
+            "Note".bold().cyan()
+        );
+
+        // Warning if only one command
+        if num_commands < 2 {
+            eprintln!(
+                "{}: --robust is designed for comparing multiple commands. \
+                 With a single command, statistical comparison will not be performed.",
+                "Note".bold().cyan()
+            );
+        }
     }
 
     pub fn validate_against_command_list(&mut self, commands: &Commands) -> Result<()> {

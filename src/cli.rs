@@ -400,6 +400,62 @@ fn build_command() -> Command {
                    `--runs` option.")
         )
         .arg(
+            Arg::new("interleave")
+            .long("interleave")
+            .action(ArgAction::SetTrue)
+            .help("Interleave benchmark runs across commands. Instead of running all iterations \
+                   of command A before command B (sequential mode), this alternates between \
+                   commands in rounds: A1, B1, A2, B2, etc. This reduces systematic bias from \
+                   thermal throttling, background load changes, and CPU frequency scaling, \
+                   making measurements more comparable. Requires at least two commands.")
+        )
+        .arg(
+            Arg::new("confidence")
+            .long("confidence")
+            .action(ArgAction::Set)
+            .value_name("LEVEL")
+            .help("Confidence level for statistical analysis (default: 0.95). \
+                   Valid range: 0.5 to 0.99. Used with bootstrap confidence intervals \
+                   to determine how certain we are about speedup estimates.")
+        )
+        .arg(
+            Arg::new("practical-delta")
+            .long("practical-delta")
+            .action(ArgAction::Set)
+            .value_name("DELTA")
+            .help("Practical significance threshold (default: 0.01, i.e., 1%). \
+                   Differences smaller than this are considered practically equivalent. \
+                   A command is reported as 'faster' only if the entire confidence \
+                   interval is above this threshold.")
+        )
+        .arg(
+            Arg::new("resamples")
+            .long("resamples")
+            .action(ArgAction::Set)
+            .value_name("NUM")
+            .help("Number of bootstrap resamples for confidence interval estimation \
+                   (default: 10000). Higher values give more stable estimates but \
+                   take longer to compute.")
+        )
+        .arg(
+            Arg::new("seed")
+            .long("seed")
+            .action(ArgAction::Set)
+            .value_name("NUM")
+            .help("Random seed for bootstrap resampling. Use this for reproducible \
+                   statistical analysis results.")
+        )
+        .arg(
+            Arg::new("robust")
+            .long("robust")
+            .action(ArgAction::SetTrue)
+            .help("Enable robust comparison mode for statistically defensible A/B benchmarks. \
+                   Equivalent to: --interleave --confidence 0.95 --practical-delta 0.01 \
+                   --resamples 10000 --output pipe, with a minimum of 20 runs. \
+                   Individual flags can be used to override specific defaults. \
+                   Best used when comparing two or more commands.")
+        )
+        .arg(
             Arg::new("debug-mode")
             .long("debug-mode")
             .action(ArgAction::SetTrue)

@@ -55,4 +55,10 @@ pub enum OptionsError<'a> {
     UnknownOutputPolicy(String),
     #[error("The file '{0}' specified as '--input' does not exist")]
     StdinDataFileDoesNotExist(String),
+    #[error("Invalid confidence level: {0}. Must be between 0.5 and 0.99.")]
+    InvalidConfidenceLevel(f64),
+    #[error("Invalid number of resamples: {0}. Must be at least 100.")]
+    InvalidResamples(usize),
+    #[error("Invalid practical delta: {0}. Must be between 0.0 and 1.0.")]
+    InvalidPracticalDelta(f64),
 }

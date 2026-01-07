@@ -110,6 +110,75 @@ option:
 hyperfine -L compiler gcc,clang '{compiler} -O2 main.cpp'
 ```
 
+### Interleaved benchmarks
+
+By default, hyperfine runs all iterations of the first command before moving to the second command
+(sequential mode). This can be problematic when comparing commands because systematic factors like
+thermal throttling, background load changes, or CPU frequency scaling may affect one command more
+than another.
+
+The `--interleave` flag enables round-robin execution, alternating between commands:
+```sh
+hyperfine --interleave 'command1' 'command2'
+```
+
+Instead of running: A₁, A₂, A₃, ..., B₁, B₂, B₃, ...
+
+Interleaved mode runs: A₁, B₁, A₂, B₂, A₃, B₃, ...
+
+This creates naturally paired samples that help cancel out time-varying effects, making measurements
+more comparable.
+
+### Statistical analysis
+
+When using interleaved mode, hyperfine automatically performs statistical analysis to determine
+if performance differences are practically significant. The analysis uses:
+
+- **Bootstrap confidence intervals**: Non-parametric method that works well with small samples
+- **Log-ratio speedup**: Geometric mean comparison that handles multiplicative effects properly
+- **Practical significance threshold**: Distinguishes real differences from measurement noise
+
+The verdict indicates whether a command is definitively "faster", "slower", or shows
+"no clear difference" compared to the reference command.
+
+You can customize the analysis with these flags:
+```sh
+hyperfine --interleave --confidence 0.99 --practical-delta 0.05 'command1' 'command2'
+```
+
+Available options:
+- `--confidence <LEVEL>`: Confidence level for CI (default: 0.95, range: 0.5-0.99)
+- `--practical-delta <DELTA>`: Threshold for practical significance (default: 0.01 = 1%)
+- `--resamples <NUM>`: Number of bootstrap resamples (default: 10000)
+- `--seed <NUM>`: Random seed for reproducible results
+
+The JSON export includes analysis results when available, containing speedup, confidence intervals,
+and the verdict for each comparison.
+
+### Robust comparison mode
+
+For users who want statistically defensible A/B comparisons without needing to understand all
+the statistical options, hyperfine offers a `--robust` flag that enables best practices:
+
+```sh
+hyperfine --robust 'command1' 'command2'
+```
+
+The `--robust` flag is equivalent to:
+- `--interleave` (enables paired sampling for better comparison)
+- `--confidence 0.95` (95% confidence intervals)
+- `--practical-delta 0.01` (1% practical significance threshold)
+- `--resamples 10000` (stable bootstrap estimates)
+- `--output pipe` (avoids /dev/null optimization detection)
+- Minimum 20 runs (ensures reliable statistical estimates)
+
+You can override individual settings if needed:
+```sh
+hyperfine --robust --confidence 0.99 'command1' 'command2'
+```
+
+This mode is best for comparing two or more commands when you need rigorous, reproducible results.
+
 ### Intermediate shell
 
 By default, commands are executed using a predefined shell (`/bin/sh` on Unix, `cmd.exe` on Windows).
